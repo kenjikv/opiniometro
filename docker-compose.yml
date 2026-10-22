@@ -1,0 +1,120 @@
+# docker compose up --build
+#   db        PostgreSQL with the raw reviews, training runs and predictions
+#   trainer   loads the CSV into the database and trains (runs once, then exits)
+#   api       FastAPI; starts only after the trainer finished successfully
+#   frontend  React compiled and served by nginx, which forwards /api to the api
+#
+# Optional profiles:
+#   docker compose --profile tools up adminer      database browser on :8081
+#   docker compose --profile dev run --rm tests     automated tests
+#   docker compose --profile dev up notebook        JupyterLab on :8888
+
+x-python: &python
+  build:
+    context: .
+    target: runtime
+  image: opiniometro-ml
+  environment:
+    DATABASE_URL: postgresql+psycopg://opiniometro:opiniometro@db:5432/opiniometro
+  # The code is also inside the image; mounting it lets you edit params.yaml,
+  # src/ or api/ and retrain without rebuilding. Rebuild only when
+  # requirements.txt changes.
+  volumes:
+    - ./artifacts:/app/artifacts
+    - ./data:/app/data
+    - ./params.yaml:/app/params.yaml:ro
+    - ./src:/app/src:ro
+    - ./api:/app/api:ro
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: opiniometro
+      POSTGRES_PASSWORD: opiniometro
+      POSTGRES_DB: opiniometro
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "${DB_PORT:-5433}:5432"     # 5433 on the host, to avoid clashing with a local PostgreSQL
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U opiniometro -d opiniometro"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  trainer:
+    <<: *python
+    command: ["python", "-m", "src.pipeline", "--skip-if-trained"]
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    <<: *python
+    command: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      trainer:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  frontend:
+    build: ./frontend
+    image: opiniometro-frontend
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+
+  adminer:
+    image: adminer:5
+    profiles: [tools]
+    environment:
+      ADMINER_DEFAULT_SERVER: db
+    ports:
+      - "8081:8080"
+    depends_on:
+      - db
+
+  tests:
+    build:
+      context: .
+      target: dev
+    image: opiniometro-dev
+    profiles: [dev]
+    command: ["pytest", "-q", "-p", "no:cacheprovider"]
+    volumes:
+      - ./params.yaml:/app/params.yaml:ro
+      - ./src:/app/src:ro
+      - ./api:/app/api:ro
+      - ./tests:/app/tests:ro
+
+  notebook:
+    image: opiniometro-dev
+    build:
+      context: .
+      target: dev
+    profiles: [dev]
+    command: ["jupyter", "lab", "--ip=0.0.0.0", "--port=8888", "--no-browser",
+              "--allow-root", "--ServerApp.token=", "--notebook-dir=/app"]
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./notebooks:/app/notebooks
+      - ./artifacts:/app/artifacts
+      - ./data:/app/data
+      - ./params.yaml:/app/params.yaml:ro
+      - ./src:/app/src:ro
+
+volumes:
+  pgdata:
