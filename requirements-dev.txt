@@ -1,0 +1,11 @@
+-r requirements.txt
+
+# Tests
+pytest==9.1.1
+httpx2==2.16.0
+
+# Notebook for EDA and experiments
+jupyterlab==4.6.4
+nbconvert==7.17.2
+ipykernel==7.4.0
+matplotlib==3.11.2

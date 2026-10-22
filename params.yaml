@@ -1,0 +1,43 @@
+# Single source of truth for the experiment.
+# Change a value here, retrain, and the API serves the new model.
+
+seed: 42
+
+data:
+  raw_path: data/raw/resenas.csv
+  n_reviews: 3000          # used only by the synthetic generator
+  test_size: 0.20          # stratified hold-out, never used to tune anything
+  max_chars: 1000          # longer texts are rejected by the API
+
+nlp:
+  # Words removed from spaCy's Spanish stop word list because they carry
+  # sentiment. spaCy's list includes "no", "bueno", "mejor" and "mal": with
+  # them removed, "no estaba bueno" and "estaba bueno" look the same.
+  # "no" goes in quotes: unquoted, YAML reads it as the boolean false.
+  keep_words: ["no", ni, nunca, jamás, nada, tampoco, sin, nadie,
+               bien, mal, bueno, buena, buenos, buenas, buen, mejor, peor,
+               muy, poco, mucho, más, menos, demasiado, tan, pero]
+  # Domain words added to the list: they appear in every class and add noise.
+  extra_stopwords: [restaurante, local, lugar, sucursal, fuimos, pedimos]
+
+tfidf:
+  max_features: 5000       # vocabulary size
+  min_df: 2                # ignore terms that appear in fewer than 2 reviews
+  max_df: 0.90             # ignore terms that appear in more than 90 % of reviews
+  sublinear_tf: true       # 1 + log(tf): repeated words do not dominate
+
+# Search space. Every combination is evaluated with stratified
+# cross-validation on the training set; the best one goes to production.
+experiments:
+  cv_folds: 5
+  scoring: f1_macro        # the three classes weigh the same despite imbalance
+  normalizers: [stem, lemma]
+  stopword_lists: [spacy_full, adjusted]
+  ngram_ranges: [[1, 1], [1, 2]]
+  models:
+    naive_bayes:
+      alpha: [0.1, 0.5, 1.0]
+      fit_prior: [true, false]
+    logistic_regression:
+      C: [0.5, 1.0, 2.0, 5.0]
+      class_weight: [null, balanced]
